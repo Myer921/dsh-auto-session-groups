@@ -1,0 +1,5 @@
+node_modules/
+settings.json
+settings.json.migrated-*
+*.log
+.DS_Store

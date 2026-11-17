@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Session archiving",
+    "description": "Archives each session with an editable prompt: the model returns a JSON decision and the plugin rewrites the title as project/category/title, which the sidebar workspace tree renders as nested session groups inside one workspace. Model, prompt, workspaces and knobs live in DSH settings."
+  }
+}

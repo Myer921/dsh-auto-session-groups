@@ -1,0 +1,8 @@
+# dsh-auto-session-groups：按会话内容智能归组（模型分类，无关键词规则）。
+# 词表默认在 lib/rules.json；模型、工作区、词表、行为全部在 DSH 设置里改
+# （设置 → 插件 → 智能整理，或插件页该行的「配置」），写进本 profile 的插件 config。
+# 这里只留空对象：workspaces 留空 = 全部工作区都参与。
+- insert:
+    - id: auto-session-groups
+      name: '@local/dsh-auto-session-groups'
+      config: {}
