@@ -62,6 +62,7 @@ const renames = []
 const routes = new Map()
 let llmCalls = 0
 let llmMode = 'ok'
+let oscCount = 0
 let lastSystem = ''
 let lastMessages = []
 
@@ -117,6 +118,31 @@ const ctx = {
         }
         if (llmMode === 'nomove') {
           yield { type: 'text-delta', text: '{"need_move":false,"target_project":"wsA","target_category":"修复","new_title":"x","confidence":0.9}' }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+          return
+        }
+        if (llmMode === 'crossws') {
+          // 模型想把 AndroidDev 的会话塞进 Arm64-INIT
+          yield { type: 'text-delta', text: '{"need_move":true,"target_project":"Arm64-INIT","target_category":"调研","new_title":"跨区错位","confidence":0.9}' }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+          return
+        }
+        if (llmMode === 'wrongcat') {
+          // 日常目录下用了工程标签
+          yield { type: 'text-delta', text: '{"need_move":true,"target_project":"日常通用","target_category":"部署","new_title":"日常里塞部署","confidence":0.9}' }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+          return
+        }
+        if (llmMode === 'badcat') {
+          // 标签根本不在任何词库
+          yield { type: 'text-delta', text: '{"need_move":true,"target_project":"wsA","target_category":"查问题","new_title":"旧词表残留","confidence":0.9}' }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+          return
+        }
+        if (llmMode === 'oscillate') {
+          // 每次给一个略不同的标题，模拟振荡
+          oscCount += 1
+          yield { type: 'text-delta', text: `{"need_move":true,"target_project":"wsA","target_category":"修复","new_title":"振荡标题${oscCount}","confidence":0.9}` }
           yield { type: 'finish', reason: { kind: 'stop' } }
           return
         }
@@ -207,11 +233,22 @@ async function call(path, method, body, address) {
 /* ── state ────────────────────────────────────────────── */
 console.log('\n[3] GET /api/state')
 const state = await call('/dsh-auto-session-groups/api/state', 'GET')
+if (state.code !== 200) console.log('    DEBUG state:', state.code, String(state.text).slice(0, 300))
 ok('200', state.code === 200)
 ok('writable=true（Proxy 抛错也能拿到 configEditor）', state.json.writable === true)
 ok('workspaces 非空', (state.json.workspaces ?? []).length === 2)
 ok('tree 含工作区名', (state.json.tree?.workspaces ?? []).some(w => w.name === 'wsA'))
-ok('tree 读到已有分组', (state.json.tree?.workspaces ?? []).some(w => (w.groups ?? []).includes('旧项目')))
+// 新行为：只把「本工作区名」和「日常目录」记成合法一级目录。
+// s3 的标题是「旧项目/修复/已归档标题」——旧项目既不是 wsA 也不是日常通用，
+// 所以它不该再被喂回模型（否则错误自我强化）。
+ok('tree 不再把跨区/历史错位分组当合法',
+  !(state.json.tree?.workspaces ?? []).some(w => (w.groups ?? []).includes('旧项目')))
+// 夹具里没有以 wsA/ 开头的会话，所以 groups 里不该出现 wsA；
+// 真正要验的是「groups 只含本工作区名或日常目录」这条不变式。
+const allGroups = (state.json.tree?.workspaces ?? []).flatMap(w => w.groups ?? [])
+ok('tree 的 groups 只含本工作区名或日常目录',
+  allGroups.every(g => g === 'wsA' || g === 'wsB' || g === '日常通用'),
+  JSON.stringify(allGroups))
 ok('prompt 非空（默认提示词）', typeof state.json.prompt === 'string' && state.json.prompt.length > 100)
 ok('defaultPrompt 与 prompt 一致（未自定义）', state.json.defaultPrompt === state.json.prompt)
 ok('categories 有工程与日常词库',
@@ -272,6 +309,51 @@ const run6 = await call('/dsh-auto-session-groups/api/run', 'POST', '{}')
 const s2b = (run6.json.renamed ?? []).find(entry => entry.id === 's2')
 ok('allowNewGroups=true 时允许新目录', s2b !== undefined && String(s2b.next).startsWith('全新项目'), JSON.stringify(s2b))
 store.allowNewGroups = false
+llmMode = 'ok'
+
+/* ── 跨工作区 / 标签词库 / 振荡 ─────────────────────── */
+console.log('\n[8b] 跨工作区与标签守卫')
+
+// 跨工作区错位：wsA 的会话想进 wsB（另一个工作区名）
+llmMode = 'crossws'
+store.allowNewGroups = false
+sessions[1].header.title = '编译不过-跨区'
+const runX = await call('/dsh-auto-session-groups/api/run', 'POST', '{}')
+const sx = (runX.json.renamed ?? []).find(entry => entry.id === 's2')
+ok('跨工作区的一级目录被丢弃（不出现 wsB）',
+  sx === undefined || !String(sx.next).startsWith('wsB'), JSON.stringify(sx))
+
+// 日常目录下用工程标签
+llmMode = 'wrongcat'
+sessions[3].header.title = '今天吃什么-错标签'
+const runY = await call('/dsh-auto-session-groups/api/run', 'POST', '{}')
+const sy = (runY.json.renamed ?? []).find(entry => entry.id === 's4')
+ok('日常目录下用工程标签被拒',
+  sy === undefined || !String(sy.next).includes('日常通用/部署'), JSON.stringify(sy))
+
+// 标签不在任何词库
+llmMode = 'badcat'
+sessions[0].header.title = '花屏问题排查-坏标签'
+const runZ = await call('/dsh-auto-session-groups/api/run', 'POST', '{}')
+const sz = (runZ.json.renamed ?? []).find(entry => entry.id === 's1')
+ok('不在词库的二级标签被拒',
+  sz === undefined || !String(sz.next).includes('查问题'), JSON.stringify(sz))
+ok('被拒时进 skipped 并说明原因',
+  (runZ.json.skipped ?? []).some(entry => String(entry.skipped).includes('合规的二级标签')))
+
+// 振荡保护：连续改名 3 次后锁住
+llmMode = 'oscillate'
+oscCount = 0
+sessions[2].header.title = '振荡测试'
+const oscResults = []
+for (let i = 0; i < 5; i += 1) {
+  const r = await call('/dsh-auto-session-groups/api/run', 'POST', '{}')
+  oscResults.push(r)
+}
+const oscRenamed = oscResults.reduce((n, r) => n + (r.json.renamed ?? []).filter(e => e.id === 's3').length, 0)
+ok('振荡保护：5 次整理最多只改 3 次', oscRenamed <= 3, `实际改了 ${oscRenamed} 次`)
+ok('振荡保护：锁住后进 skipped',
+  oscResults.some(r => (r.json.skipped ?? []).some(e => String(e.skipped).includes('振荡保护'))))
 llmMode = 'ok'
 
 /* ── 失败与冷却 ───────────────────────────────────────── */

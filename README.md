@@ -70,12 +70,21 @@
 
 插件侧的守卫（不依赖模型自觉）：
 
-- `allowNewGroups=false` 时，模型给的一级目录若不在「工作区名 ∪ 已有分组 ∪ 日常目录」里，
-  **丢弃这一层**，只保留二级标签，并记日志。
+- **一级目录守卫**：`allowNewGroups=false` 时，模型给的一级目录若不在
+  「**所有工作区名 ∪ 日常目录**」里，**丢弃这一层**，只保留二级标签，并记日志。
+  注意：**历史分组不算合法**——历史里可能就躺着错位的名字（`AndroidDev` 下出现过
+  `Arm64-INIT`、`Arm64-INIT` 下出现过 `开发`），把它们当合法会让错误自我强化。
+- **二级标签守卫**：必须在词库里，且与一级目录类别匹配——一级目录是日常目录时只能用
+  日常词库，否则只能用工程词库。不合规就整条跳过（`skipped: 模型没给出合规的二级标签`）。
+- **振荡保护**：同一会话 30 分钟内改名超过 3 次就锁住，只记日志不再动它
+  （强制整理可解锁）。实测踩过一条会话在两种标题间来回改了 74 次。
 - `collapseOwnWorkspace=true` 时，一级目录与会话所在工作区同名就省掉这一层
   （工作区本身已经显示了，再套一层是重复）。
 - `correctMisplaced=false` 时，标题已含 `/` 的一律不动。
 - 拼出来的标题按 `maxTitleBytes` 截断（session-title 服务硬上限 80 字节）。
+
+提示词里还会注入 `own_workspace`（本条会话所在工作区名），让模型知道「自己在哪」，
+而不是从工作区树里瞎猜。
 
 ## 和 better-workspace 的契约（不改对方一行代码）
 
@@ -121,12 +130,20 @@ grep auto-session-groups ~/.dsh-next/dsh.log | tail
 # session-…: 丢弃未知一级目录 "全新项目"（allowNewGroups=false）
 # 路由 dsh-opencode-go/xxx 失败（empty-reply）：模型没吐正文（finish=error …)
 # 手动整理：扫 18 条，改 3 条，跳过 12 条
+# session-…: 丢弃未知一级目录 "Arm64-INIT"（allowNewGroups=false）
+# session-…: 丢弃不合规二级标签 "查问题"（工程词库不含它）
+# session-…: 振荡保护，跳过（30 分钟内已改 3 次）
 ```
 
 归档失败的五个标签：`no-route`（没有可用路由）/ `empty-reply`（模型没吐正文）/
 `bad-json`（输出不是合法 JSON）/ `timeout`（超时）/ `error`（其他）。
 
 ## 实测坑（2026-11-17，本机）
+
+0. **0.8.0 的分类会自我强化错位**（0.9.0 已修）：`knownProjectNames()` 曾把「所有历史分组」
+   也算成合法一级目录，于是 `AndroidDev` 下已经存在的 `Arm64-INIT/调研/…` 被读进 `groups`
+   又喂回模型，模型照着继续用；同时二级标签完全没校验，旧词表 v4 的 `查问题`、不在新词库的
+   `移植` 都能写进标题。14 条会话里 9 条不合规，一条会话被来回改名 74 次。
 
 1. **宿主半改代码必须重启 DSH**：`plugin_manager set_plugin` 关开一次只重跑 `apply()`，
    **不重新 import**；改 `package.json` 的 `main`/`version` 也没用。client 半不受影响——
